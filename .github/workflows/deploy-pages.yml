@@ -1,0 +1,75 @@
+name: Deploy dashboard to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.4.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Prepare standalone Pages build
+        shell: python
+        run: |
+          import re
+          from pathlib import Path
+          Path("vite.pages.config.ts").write_text('''import tailwindcss from "@tailwindcss/vite";
+          import react from "@vitejs/plugin-react";
+          import path from "node:path";
+          import { defineConfig } from "vite";
+          export default defineConfig({
+            base: "/FAA-Wildlife-Strike-Dashboard/",
+            plugins: [react(), tailwindcss()],
+            resolve: { alias: {
+              "@": path.resolve(import.meta.dirname, "client/src"),
+              "@shared": path.resolve(import.meta.dirname, "shared"),
+            } },
+            root: path.resolve(import.meta.dirname, "client"),
+            build: { outDir: path.resolve(import.meta.dirname, "dist/pages"), emptyOutDir: true },
+          });
+          ''')
+          p = Path("client/src/App.tsx")
+          s = p.read_text().replace('import { Route, Switch }', 'import { Route, Switch, Router as BaseRouter }')
+          s = s.replace('<Router />', '<BaseRouter base={import.meta.env.BASE_URL.slice(0, -1)}><Router /></BaseRouter>')
+          p.write_text(s)
+          p = Path("client/index.html")
+          p.write_text(re.sub(r'<script\s+defer\s+src="%VITE_ANALYTICS_ENDPOINT%/umami".*?</script>', '', p.read_text(), flags=re.S))
+          for name in ["LineChart", "BarChart", "PhaseChart"]:
+              p = Path(f"client/src/components/{name}.tsx")
+              p.write_text(p.read_text().replace('svg.attr("width", W).attr("height", H);', 'svg.attr("width", W).attr("height", H).attr("viewBox", "0 0 " + W + " " + H);'))
+          p = Path("client/src/pages/Home.tsx")
+          p.write_text(p.read_text().replace('https://github.com/jiayu1123/faa-wildlife-strike-viz', 'https://github.com/jiayu1123/FAA-Wildlife-Strike-Dashboard'))
+      - run: pnpm check
+      - run: pnpm exec vite build --config vite.pages.config.ts
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist/pages
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+    steps:
+      - name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v4
